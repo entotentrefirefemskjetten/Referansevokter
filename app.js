@@ -35,6 +35,7 @@ const sourceLabels = {
   semantic_scholar: "Semantic Scholar",
   datacite: "DataCite",
   europe_pmc: "Europe PMC",
+  supplied_url: "Oppgitt lenke",
   lovdata: "Lovdata",
   oria: "Oria/BIBSYS",
   pubmed: "PubMed",
@@ -241,14 +242,15 @@ function parseMetadata(reference) {
   const quotedTitle = reference.match(/[“"]([^”"]{8,180})[”"]/);
   const afterYear = reference.match(/\)\.?\s*([^.]*(?:\.[^A-ZÆØÅ]?)?)/);
   const title = cleanTitle((quotedTitle?.[1] || afterYear?.[1] || parseVancouverTitle(reference) || reference).slice(0, 220));
-  const hasUrl = /https?:\/\/\S+/i.test(reference);
+  const url = extractUrl(reference);
+  const hasUrl = Boolean(url);
   const kind = inferReferenceKind(reference, doi);
 
   const authors = parseAuthors(reference);
   const venue = parseVenue(reference);
   const containerTitle = parseContainerTitle(reference, kind);
 
-  return { doi, year, title, authors, venue, containerTitle, hasUrl, kind };
+  return { doi, year, title, authors, venue, containerTitle, url, hasUrl, kind };
 }
 
 async function checkDoi(reference, parsed) {
@@ -385,6 +387,10 @@ function getManualSourceChecks(reference, parsed) {
   // Lovdata, Oria/BIBSYS and Google Scholar are useful human verification
   // sources, but this GitHub Pages app should not scrape them. We expose
   // search links instead, so the app stays lightweight and policy-friendly.
+  if (parsed.url) {
+    checks.push({ source: "supplied_url", searched: false, found: false, matches: [] });
+  }
+
   if (parsed.kind === "legal" || /lovdata\.no/i.test(reference)) {
     checks.push({ source: "lovdata", searched: false, found: false, matches: [] });
   }
@@ -595,6 +601,13 @@ function parseVancouverTitle(reference) {
   return parts[1];
 }
 
+function extractUrl(reference) {
+  const match = reference.match(/https?:\/\/[^\s]+/i);
+  if (!match) return "";
+  const url = match[0].replace(/[.,;:)]+$/g, "");
+  return /https?:\/\/(?:dx\.)?doi\.org\//i.test(url) ? "" : url;
+}
+
 function parseAuthors(reference) {
   const beforeYear = reference.split(/\((?:19|20)\d{2}\)|\b(?:19|20)\d{2}\b/)[0] || "";
   return beforeYear
@@ -732,6 +745,7 @@ function downloadCsvReport(results) {
     "Evidence",
     "Warnings",
     "Manuell kontroll anbefalt",
+    "Sjekket manuelt",
     "Manuelle kilder",
   ];
   const rows = results.map((result, index) => [
@@ -747,6 +761,7 @@ function downloadCsvReport(results) {
     (result.evidence || []).join(" | "),
     (result.warnings || []).join(" | "),
     needsManualReview(result) ? "Ja" : "Nei",
+    result.manualChecked ? "Ja" : "Nei",
     summarizeManualSources(result),
   ]);
   const csv = "\uFEFF" + [headers, ...rows].map((row) => row.map(toCsvCell).join(";")).join("\r\n");
@@ -819,6 +834,7 @@ function renderResult(result) {
     result.parsed?.year ? `År: ${result.parsed.year}` : "",
     result.parsed?.authors?.[0] ? `Første forfatter: ${result.parsed.authors[0]}` : "",
     result.parsed?.containerTitle ? `Bok: ${result.parsed.containerTitle}` : "",
+    result.parsed?.url ? "Oppgitt URL finnes" : "",
   ].filter(Boolean);
   const sources = renderSourceGroups(result);
 
@@ -852,10 +868,21 @@ function renderResult(result) {
         <span class="badge ${result.status}">${result.label}</span>
         <div class="score-meter"><span class="${scoreClass}" style="width: ${score}%"></span></div>
         <p class="meta">${score}/100 confidence</p>
+        <label class="manual-check">
+          <input type="checkbox" data-manual-check="${result.id}" ${result.manualChecked ? "checked" : ""}>
+          Sjekket manuelt
+        </label>
       </div>
     </article>
   `;
 }
+
+resultList.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-manual-check]");
+  if (!checkbox) return;
+  const result = allResults.find((item) => item.id === Number(checkbox.dataset.manualCheck));
+  if (result) result.manualChecked = checkbox.checked;
+});
 
 function renderSourceGroups(result) {
   const automatic = (result.sourcesChecked || []).filter((sourceCheck) => automaticSources.has(sourceCheck.source));
@@ -899,6 +926,7 @@ function getSourcePillUrl(sourceCheck, result) {
   if (!query) return "";
 
   if (sourceCheck.source === "lovdata") return `https://lovdata.no/sok?q=${query}`;
+  if (sourceCheck.source === "supplied_url" && result.parsed?.url) return result.parsed.url;
   if (sourceCheck.source === "oria") return `https://bibsys-network.primo.exlibrisgroup.com/discovery/search?vid=47BIBSYS_NETWORK:BIBSYS_UNION&query=any,contains,${query}`;
   if (sourceCheck.source === "pubmed") return `https://pubmed.ncbi.nlm.nih.gov/?term=${query}`;
   if (sourceCheck.source === "scopus") return `https://www.scopus.com/results/results.uri?sort=plf-f&src=s&st1=${query}`;
