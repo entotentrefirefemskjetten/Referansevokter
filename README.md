@@ -2,9 +2,9 @@
 
 En lokal prototype for å undersøke hvor godt akademiske referanser kan verifiseres i åpne registre.
 
-Åpne `index.html` i en nettleser, eller publiser mappen med GitHub Pages. Lim inn en referanseliste og trykk **Sjekk referanser**. Appen søker automatisk i DOI/Crossref, OpenAlex, Semantic Scholar og DataCite og gir en forsiktig triage-vurdering.
+Åpne `index.html` i en nettleser, eller publiser mappen med GitHub Pages. Lim inn en referanseliste og trykk **Sjekk referanser**. Appen prøver å dele opp referanser automatisk, også når listen kommer som en stor tekstblokk fra PDF eller Word. Bruk **Rydd liste** hvis du vil se/rette opp delingen før søk.
 
-Lovdata, Oria/BIBSYS og Google Scholar brukes som manuelle kontrollkilder via søkelenker. Appen scraper dem ikke. Oria-lenkene bruker den nye Primo VE-adressen (`bibsys-network.primo.exlibrisgroup.com`).
+Appen søker automatisk i DOI/Crossref, OpenAlex, Semantic Scholar, DataCite og Europe PMC når referansen eller valgt fagprofil tilsier det. Lovdata, Oria/BIBSYS, PubMed, Scopus, Web of Science og Google Scholar brukes som manuelle kontrollkilder via søkelenker. Appen scraper dem ikke. Oria-lenkene bruker den nye Primo VE-adressen (`bibsys-network.primo.exlibrisgroup.com`).
 
 - **Verifisert**: DOI eller flere metadatafelt matcher godt.
 - **Sannsynlig verifisert**: ingen perfekt DOI-match, men tittel/år/forfatter ligner sterkt.

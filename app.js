@@ -1,6 +1,8 @@
 const refsInput = document.querySelector("#references");
 const checkButton = document.querySelector("#checkReferences");
 const clearButton = document.querySelector("#clearAll");
+const formatButton = document.querySelector("#formatReferences");
+const downloadCsvButton = document.querySelector("#downloadCsv");
 const sampleButton = document.querySelector("#loadSample");
 const resultList = document.querySelector("#resultList");
 const statusLine = document.querySelector("#status");
@@ -32,10 +34,16 @@ const sourceLabels = {
   openalex: "OpenAlex",
   semantic_scholar: "Semantic Scholar",
   datacite: "DataCite",
+  europe_pmc: "Europe PMC",
   lovdata: "Lovdata",
   oria: "Oria/BIBSYS",
+  pubmed: "PubMed",
+  scopus: "Scopus",
+  web_of_science: "Web of Science",
   google_scholar: "Google Scholar",
 };
+
+const automaticSources = new Set(["doi", "crossref", "openalex", "semantic_scholar", "datacite", "europe_pmc"]);
 
 const sampleReferences = [
   "Knuth, D. E. (1984). Literate Programming. The Computer Journal, 27(2), 97-111. https://doi.org/10.1093/comjnl/27.2.97",
@@ -69,6 +77,29 @@ clearButton.addEventListener("click", () => {
 
 refsInput.addEventListener("input", updateReferenceCount);
 
+formatButton.addEventListener("click", () => {
+  const references = parseReferences(refsInput.value);
+  if (!references.length) {
+    updateStatus("Lim inn referanser først, så kan appen rydde listen.");
+    return;
+  }
+
+  refsInput.value = references.join("\n\n");
+  updateReferenceCount();
+  updateStatus(`Ryddet listen til ${references.length} ${references.length === 1 ? "referanse" : "referanser"}.`);
+});
+
+downloadCsvButton.addEventListener("click", () => {
+  const finishedResults = allResults.filter((result) => result.status);
+  if (!finishedResults.length) {
+    updateStatus("Kjør en sjekk før du laster ned CSV.");
+    return;
+  }
+
+  downloadCsvReport(finishedResults);
+  updateStatus("CSV-rapporten er laget lokalt i nettleseren.");
+});
+
 checkButton.addEventListener("click", async () => {
   const references = parseReferences(refsInput.value);
   if (!references.length) {
@@ -96,6 +127,7 @@ checkButton.addEventListener("click", async () => {
     console.error(error);
   } finally {
     setBusy(false);
+    updateCsvButtonState();
   }
 });
 
@@ -113,8 +145,9 @@ function parseReferences(text) {
     .replace(/\r/g, "")
     .replace(/&(?:#39|apos);/g, "'")
     .replace(/\bhttps?:\/\/\s+/gi, "https://");
+  const prepared = preparePastedReferenceText(cleaned);
 
-  const lines = cleaned
+  const lines = prepared
     .split("\n")
     .map((line) => line.trim().replace(/^\d{1,3}\s+(\d{1,3}[.)]\s+)/, "$1"))
     .filter(Boolean)
@@ -139,7 +172,7 @@ function parseReferences(text) {
     return references.filter((item) => item.length > 20);
   }
 
-  const blocks = cleaned
+  const blocks = prepared
     .split(/\n\s*\n/g)
     .map((item) => joinReferenceLines(item.split("\n")))
     .filter((item) => item.length > 20);
@@ -149,6 +182,15 @@ function parseReferences(text) {
   return lines
     .map((item) => item.replace(/\s+/g, " ").trim())
     .filter((item) => item.length > 20);
+}
+
+function preparePastedReferenceText(text) {
+  return text
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .replace(/([.;])\s+(\[\d+\]|\d{1,3}[.)])\s+(?=[A-ZÆØÅ])/g, "$1\n$2 ")
+    .replace(/(\S)\s+(\d{1,3}[.)])\s+(?=[A-ZÆØÅ][A-Za-zÆØÅæøå'’-]+(?:,|\s+[A-Z]))/g, "$1\n$2 ")
+    .replace(/(\S)\s+(\[\d+\])\s+(?=[A-ZÆØÅ])/g, "$1\n$2 ");
 }
 
 function joinReferenceLines(lines) {
@@ -168,6 +210,7 @@ async function checkReference(reference, id) {
     searchOpenAlex(reference, parsed),
     searchSemanticScholar(reference, parsed),
     searchDataCite(reference, parsed),
+    searchEuropePmc(reference, parsed),
   ]);
   sourceChecks.push(...getManualSourceChecks(reference, parsed));
 
@@ -291,6 +334,28 @@ async function searchDataCite(reference, parsed) {
   });
 }
 
+async function searchEuropePmc(reference, parsed) {
+  if (!shouldSearchEuropePmc(reference, parsed)) return sourceNotSearched("europe_pmc");
+
+  return runSource("europe_pmc", async () => {
+    const query = parsed.doi ? `DOI:"${parsed.doi}"` : parsed.title.length > 8 ? `"${parsed.title}"` : reference;
+    const params = new URLSearchParams({
+      query,
+      format: "json",
+      pageSize: "5",
+    });
+    const response = await fetchWithTimeout(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?${params}`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.resultList?.result || []).map(normalizeEuropePmcWork);
+  });
+}
+
+function shouldSearchEuropePmc(reference, parsed) {
+  if (/pmid|pmcid|pubmed|medline|bmc|bmj|lancet|jama|nejm|nursing|surgery|medicine|medical|patient|clinical|health|hospital|perioperative|aorn|sykepleie|helse/i.test(reference)) return true;
+  return Boolean(parsed.doi && /10\.1186|10\.1001|10\.1016|10\.1097|10\.1111|10\.1136|10\.1056|10\.2196|10\.3389/i.test(parsed.doi));
+}
+
 async function fetchWithTimeout(url) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 9000);
@@ -328,6 +393,12 @@ function getManualSourceChecks(reference, parsed) {
     checks.push({ source: "oria", searched: false, found: false, matches: [] });
   }
 
+  if (shouldSearchEuropePmc(reference, parsed)) {
+    checks.push({ source: "pubmed", searched: false, found: false, matches: [] });
+  }
+
+  checks.push({ source: "scopus", searched: false, found: false, matches: [] });
+  checks.push({ source: "web_of_science", searched: false, found: false, matches: [] });
   checks.push({ source: "google_scholar", searched: false, found: false, matches: [] });
   return checks;
 }
@@ -389,6 +460,20 @@ function normalizeDataCiteWork(item) {
   };
 }
 
+function normalizeEuropePmcWork(item) {
+  return {
+    source: "europe_pmc",
+    sourceId: item?.id || item?.pmid || item?.pmcid || "",
+    doi: normalizeDoi(item?.doi || ""),
+    title: cleanTitle(item?.title || ""),
+    authors: (item?.authorString || "").split(/\s*,\s*/).map((author) => author.trim()).filter(Boolean),
+    year: Number(item?.pubYear) || null,
+    venue: item?.journalTitle || "",
+    publisher: "",
+    url: item?.doi ? `https://doi.org/${item.doi}` : item?.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${item.pmid}/` : item?.id ? `https://europepmc.org/article/${item.source || "MED"}/${item.id}` : "",
+  };
+}
+
 function dedupeWorks(works) {
   const seen = new Set();
   return works.filter((work) => {
@@ -441,13 +526,12 @@ function getVerdict(best, parsed, candidates, sourceChecks) {
   const warnings = [];
   const searched = sourceChecks.filter((sourceCheck) => sourceCheck.searched);
   const successfulSearches = searched.filter((sourceCheck) => !sourceCheck.error);
-  const errors = searched.filter((sourceCheck) => sourceCheck.error);
-
-  errors.forEach((sourceCheck) => {
-    warnings.push(`${sourceLabels[sourceCheck.source]} feilet teknisk: ${sourceCheck.error}. Dette betyr ikke at referansen er ugyldig.`);
-  });
 
   if (!successfulSearches.length) {
+    const errors = searched.filter((sourceCheck) => sourceCheck.error);
+    errors.forEach((sourceCheck) => {
+      warnings.push(`${sourceLabels[sourceCheck.source]} feilet teknisk: ${sourceCheck.error}.`);
+    });
     return makeVerdict("check_failed", 0, evidence, warnings.concat("Ingen kilder kunne sjekkes på grunn av tekniske feil."));
   }
 
@@ -582,6 +666,7 @@ function countIndependentMatches(candidate, sourceChecks) {
 
 function getErrorMessage(error) {
   if (error?.name === "AbortError") return "timeout";
+  if (/failed to fetch/i.test(error?.message || "")) return "API-et kunne ikke nås fra nettleseren, trolig på grunn av CORS, rate limit eller nettverk";
   return error?.message || "ukjent API-feil";
 }
 
@@ -618,6 +703,7 @@ function tokenize(value) {
 function render() {
   const visible = allResults.filter((result) => matchesFilter(result, currentFilter));
   updateCounters();
+  updateCsvButtonState();
 
   if (!allResults.length) {
     resultList.innerHTML = '<div class="empty">Ingen resultater ennå.</div>';
@@ -632,11 +718,81 @@ function render() {
   resultList.innerHTML = visible.map(renderResult).join("");
 }
 
+function downloadCsvReport(results) {
+  const headers = [
+    "Nr",
+    "Original referanse",
+    "Status",
+    "Confidence",
+    "Beste treff",
+    "DOI",
+    "År",
+    "Beste kilde",
+    "Autosøk",
+    "Evidence",
+    "Warnings",
+    "Manuell kontroll anbefalt",
+    "Manuelle kilder",
+  ];
+  const rows = results.map((result, index) => [
+    index + 1,
+    result.originalReference || result.reference || "",
+    result.label || result.status || "",
+    result.confidence ?? "",
+    result.best?.title || "",
+    result.best?.doi || result.parsed?.doi || "",
+    result.best?.year || result.parsed?.year || "",
+    sourceLabels[result.best?.source] || result.best?.source || "",
+    summarizeAutomaticSources(result),
+    (result.evidence || []).join(" | "),
+    (result.warnings || []).join(" | "),
+    needsManualReview(result) ? "Ja" : "Nei",
+    summarizeManualSources(result),
+  ]);
+  const csv = "\uFEFF" + [headers, ...rows].map((row) => row.map(toCsvCell).join(";")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const date = new Date().toISOString().slice(0, 10);
+  link.href = url;
+  link.download = `referansevokter-rapport-${date}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function summarizeAutomaticSources(result) {
+  return (result.sourcesChecked || [])
+    .filter((sourceCheck) => automaticSources.has(sourceCheck.source))
+    .map((sourceCheck) => {
+      const label = sourceLabels[sourceCheck.source] || sourceCheck.source;
+      const state = sourceCheck.error ? "feilet" : sourceCheck.found ? "treff" : sourceCheck.searched ? "ingen treff" : "ikke brukt";
+      return `${label}: ${state}`;
+    })
+    .join(" | ");
+}
+
+function summarizeManualSources(result) {
+  return (result.sourcesChecked || [])
+    .filter((sourceCheck) => !automaticSources.has(sourceCheck.source))
+    .map((sourceCheck) => sourceLabels[sourceCheck.source] || sourceCheck.source)
+    .join("; ");
+}
+
+function needsManualReview(result) {
+  return ["partial_match", "metadata_mismatch", "not_found_in_checked_sources", "needs_manual_review", "check_failed"].includes(result.status);
+}
+
+function toCsvCell(value) {
+  const text = String(value ?? "").replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 function matchesFilter(result, filter) {
   if (filter === "all") return true;
   if (filter === "verified") return ["verified", "likely_verified"].includes(result.status);
-  if (filter === "partial") return result.status === "partial_match";
-  if (filter === "review") return ["not_found_in_checked_sources", "needs_manual_review", "check_failed"].includes(result.status);
+  if (filter === "review") return ["partial_match", "metadata_mismatch", "not_found_in_checked_sources", "needs_manual_review", "check_failed"].includes(result.status);
   return result.status === filter;
 }
 
@@ -658,17 +814,13 @@ function renderResult(result) {
 
   const scoreClass = ["verified", "likely_verified"].includes(result.status) ? "" : result.status === "partial_match" ? "warn" : result.status === "metadata_mismatch" ? "danger" : "review";
   const score = Math.max(0, Math.min(100, Math.round(result.confidence || result.best?.score || 0)));
-  const links = result.best?.url
-    ? `<div class="source-links"><a href="${escapeAttribute(result.best.url)}" target="_blank" rel="noreferrer">Åpne beste treff hos ${escapeHtml(sourceLabels[result.best.source] || result.best.source)}</a></div>`
-    : "";
-  const manualLinks = renderManualLinks(result);
   const parsedFields = [
     result.parsed?.doi ? `DOI: ${result.parsed.doi}` : "",
     result.parsed?.year ? `År: ${result.parsed.year}` : "",
     result.parsed?.authors?.[0] ? `Første forfatter: ${result.parsed.authors[0]}` : "",
     result.parsed?.containerTitle ? `Bok: ${result.parsed.containerTitle}` : "",
   ].filter(Boolean);
-  const sources = (result.sourcesChecked || []).map(renderSourcePill).join("");
+  const sources = renderSourceGroups(result);
 
   return `
     <article class="reference-row" data-status="${result.status}">
@@ -676,7 +828,7 @@ function renderResult(result) {
         <div class="reference-text">${escapeHtml(result.reference)}</div>
         <p class="match-title"><strong>Beste treff:</strong> ${escapeHtml(result.best?.title || "Ingen treff")}</p>
         <p class="meta">${escapeHtml([result.best?.venue, result.best?.year, result.best?.doi ? `DOI ${result.best.doi}` : ""].filter(Boolean).join(" · "))}</p>
-        <div class="source-list">${sources}</div>
+        ${sources}
         <div class="detail-grid">
           <div class="detail-box">
             <h3>Parsed fields</h3>
@@ -695,8 +847,6 @@ function renderResult(result) {
             </ul>
           </div>
         </div>
-        ${links}
-        ${manualLinks}
       </div>
       <div class="score">
         <span class="badge ${result.status}">${result.label}</span>
@@ -707,40 +857,76 @@ function renderResult(result) {
   `;
 }
 
-function renderSourcePill(sourceCheck) {
-  const label = sourceLabels[sourceCheck.source] || sourceCheck.source;
-  const state = !sourceCheck.searched ? "manuell" : sourceCheck.error ? "feilet" : sourceCheck.found ? "treff" : "ingen treff";
-  const className = sourceCheck.error ? "error" : sourceCheck.found ? "found" : "";
-  return `<span class="source-pill ${className}">${escapeHtml(label)}: ${escapeHtml(state)}</span>`;
-}
-
-function renderManualLinks(result) {
-  const links = getManualSearchLinks(result);
-  if (!links.length) return "";
+function renderSourceGroups(result) {
+  const automatic = (result.sourcesChecked || []).filter((sourceCheck) => automaticSources.has(sourceCheck.source));
+  const manual = (result.sourcesChecked || []).filter((sourceCheck) => !automaticSources.has(sourceCheck.source));
 
   return `
-    <div class="source-links">
-      ${links.map((link) => `<a href="${escapeAttribute(link.url)}" target="_blank" rel="noreferrer">${escapeHtml(link.label)}</a>`).join("")}
+    <div class="source-list">
+      <div class="source-group">
+        <span class="source-group-label">Autosøk:</span>
+        ${automatic.map((sourceCheck) => renderSourcePill(sourceCheck, result)).join("")}
+      </div>
+      <div class="source-group">
+        <span class="source-group-label">Manuelle søk:</span>
+        ${manual.map((sourceCheck) => renderSourcePill(sourceCheck, result)).join("")}
+      </div>
     </div>
   `;
 }
 
-function getManualSearchLinks(result) {
-  const reference = result.originalReference || result.reference;
-  const query = buildSearchQuery(result);
-  const encodedQuery = encodeURIComponent(query || reference);
-  const links = [];
+function renderSourcePill(sourceCheck, result) {
+  const label = sourceLabels[sourceCheck.source] || sourceCheck.source;
+  const isAutomatic = automaticSources.has(sourceCheck.source);
+  const state = isAutomatic ? (sourceCheck.error ? "feilet" : sourceCheck.found ? "treff" : "ingen treff") : "åpne søk";
+  const className = sourceCheck.error ? "error search" : sourceCheck.found ? "found" : "search";
+  const url = getSourcePillUrl(sourceCheck, result);
+  const text = `${label}: ${state}`;
 
-  if (result.parsed?.kind === "legal" || /lovdata\.no/i.test(reference)) {
-    links.push({ label: "Søk i Lovdata", url: `https://lovdata.no/sok?q=${encodedQuery}` });
+  if (url) {
+    return `<a class="source-pill ${className}" href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
   }
 
-  if (["book", "chapter", "thesis", "report", "guideline"].includes(result.parsed?.kind) || /\bisbn\b|gyldendal|universitetsforlaget|sage|routledge|elsevier/i.test(reference)) {
-    links.push({ label: "Søk i Oria/BIBSYS", url: `https://bibsys-network.primo.exlibrisgroup.com/discovery/search?vid=47BIBSYS_NETWORK:BIBSYS_UNION&query=any,contains,${encodedQuery}` });
+  return `<span class="source-pill ${className}">${escapeHtml(text)}</span>`;
+}
+
+function getSourcePillUrl(sourceCheck, result) {
+  const firstMatch = sourceCheck.matches?.find((match) => match.url);
+  if (firstMatch?.url) return firstMatch.url;
+  if (!result) return "";
+
+  const query = encodeURIComponent(buildSourceSearchQuery(sourceCheck.source, result));
+  if (!query) return "";
+
+  if (sourceCheck.source === "lovdata") return `https://lovdata.no/sok?q=${query}`;
+  if (sourceCheck.source === "oria") return `https://bibsys-network.primo.exlibrisgroup.com/discovery/search?vid=47BIBSYS_NETWORK:BIBSYS_UNION&query=any,contains,${query}`;
+  if (sourceCheck.source === "pubmed") return `https://pubmed.ncbi.nlm.nih.gov/?term=${query}`;
+  if (sourceCheck.source === "scopus") return `https://www.scopus.com/results/results.uri?sort=plf-f&src=s&st1=${query}`;
+  if (sourceCheck.source === "web_of_science") return `https://www.webofscience.com/wos/woscc/basic-search?search_mode=BasicSearch&value(input1)=${query}&field(input1)=ALL`;
+  if (sourceCheck.source === "google_scholar") return `https://scholar.google.com/scholar?q=${query}`;
+  if (sourceCheck.source === "europe_pmc") return `https://europepmc.org/search?query=${query}`;
+  if (sourceCheck.source === "crossref") return `https://search.crossref.org/?q=${query}`;
+  if (sourceCheck.source === "openalex") return `https://openalex.org/works?page=1&filter=default.search:${query}`;
+  if (sourceCheck.source === "semantic_scholar") return `https://www.semanticscholar.org/search?q=${query}`;
+  if (sourceCheck.source === "datacite") return `https://commons.datacite.org/?query=${query}`;
+  if (sourceCheck.source === "doi" && result.parsed?.doi) return `https://doi.org/${encodeURIComponent(result.parsed.doi)}`;
+  return "";
+}
+
+function buildSourceSearchQuery(source, result) {
+  const parsed = result.parsed || {};
+
+  if (source === "semantic_scholar") {
+    return [parsed.title, parsed.authors?.[0], parsed.year].filter(Boolean).join(" ") || cleanSearchQuery(result.originalReference || result.reference || "");
   }
 
-  links.push({ label: "Søk manuelt i Google Scholar", url: `https://scholar.google.com/scholar?q=${encodedQuery}` });
-  return links;
+  if (source === "pubmed" || source === "europe_pmc") {
+    return [parsed.title, parsed.authors?.[0], parsed.year, parsed.doi].filter(Boolean).join(" ") || cleanSearchQuery(result.originalReference || result.reference || "");
+  }
+
+  if (source === "doi" && parsed.doi) return parsed.doi;
+
+  return buildSearchQuery(result) || cleanSearchQuery(result.originalReference || result.reference || "");
 }
 
 function buildSearchQuery(result) {
@@ -804,7 +990,13 @@ function updateStatus(message) {
 function setBusy(isBusy) {
   checkButton.disabled = isBusy;
   sampleButton.disabled = isBusy;
+  formatButton.disabled = isBusy;
+  downloadCsvButton.disabled = isBusy || !allResults.some((result) => result.status);
   checkButton.innerHTML = `${checkIcon}${isBusy ? "Sjekker..." : "Sjekk referanser"}`;
+}
+
+function updateCsvButtonState() {
+  downloadCsvButton.disabled = !allResults.some((result) => result.status);
 }
 
 function escapeHtml(value) {

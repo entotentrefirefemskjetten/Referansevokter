@@ -25,7 +25,7 @@
             <div class="pane-header">
               <div>
                 <h2>Lim inn referanser</h2>
-                <p>En referanse per linje gir best treff.</p>
+                <p>Lim inn hele referanselisten. Appen prøver å dele den opp automatisk.</p>
               </div>
               <button class="icon-button" id="loadSample" type="button" title="Last eksempel" aria-label="Last eksempel">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -34,7 +34,7 @@
                 </svg>
               </button>
             </div>
-            <textarea id="references" spellcheck="false" placeholder="Eksempel:&#10;Smith, J. (2021). Title of the article. Journal Name, 12(3), 45-59. https://doi.org/..."></textarea>
+            <textarea id="references" spellcheck="false" placeholder="Eksempel:&#10;1. Smith J. Title of the article. Journal Name. 2021;12(3):45-59. https://doi.org/...&#10;2. Hansen L. Boktittel. Oslo: Forlag; 2020."></textarea>
             <div class="input-meta">
               <span id="referenceCount">0 referanser oppdaget</span>
             </div>
@@ -46,6 +46,14 @@
                 </svg>
                 Sjekk referanser
               </button>
+              <button class="secondary" id="formatReferences" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16"></path>
+                  <path d="M4 12h10"></path>
+                  <path d="M4 17h16"></path>
+                </svg>
+                Rydd liste
+              </button>
               <button class="secondary" id="clearAll" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M3 6h18"></path>
@@ -53,6 +61,14 @@
                   <path d="m19 6-1 14H6L5 6"></path>
                 </svg>
                 Tøm
+              </button>
+              <button class="secondary" id="downloadCsv" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <path d="M7 10l5 5 5-5"></path>
+                  <path d="M12 15V3"></path>
+                </svg>
+                Last ned CSV
               </button>
             </div>
           </section>
@@ -78,7 +94,7 @@
             </div>
             <div class="note">
               <h2>Hvordan appen vurderer</h2>
-              <p>Den søker i DOI-, Crossref-, OpenAlex-, Semantic Scholar- og DataCite-data, og lager manuelle lenker til Lovdata, Oria/BIBSYS og Google Scholar når det passer.</p>
+              <p>Appen sammenligner DOI, tittel, år, forfatter og publiseringssted i åpne registre, med ekstra støtte for medisin og helsefag. Kilder som krever manuell kontroll vises som klikkbare søkelenker.</p>
             </div>
           </section>
         </div>
@@ -89,16 +105,15 @@
             <div class="filter-tabs" role="tablist" aria-label="Filter">
               <button class="tab active" data-filter="all" type="button">Alle</button>
               <button class="tab" data-filter="verified" type="button">Verifisert</button>
-              <button class="tab" data-filter="partial" type="button">Delvis</button>
               <button class="tab" data-filter="review" type="button">Må gjennomgås</button>
-              <button class="tab" data-filter="metadata_mismatch" type="button">Metadata-avvik</button>
             </div>
           </div>
           <div id="status" class="status">Klar til å sjekke.</div>
+          <div class="source-help">Autosøk kjøres av appen mot åpne registre. Manuelle søk er snarveier du selv kan åpne for kontroll.</div>
           <div id="resultList" class="result-list"></div>
         </section>
       </section>
     </main>
-    <script src="app.js?v=9"></script>
+    <script src="app.js?v=22"></script>
   </body>
 </html>
