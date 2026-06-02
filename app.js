@@ -35,6 +35,7 @@ const sourceLabels = {
   semantic_scholar: "Semantic Scholar",
   datacite: "DataCite",
   europe_pmc: "Europe PMC",
+  pubmed_auto: "PubMed",
   supplied_url: "Oppgitt lenke",
   lovdata: "Lovdata",
   oria: "Oria/BIBSYS",
@@ -44,7 +45,7 @@ const sourceLabels = {
   google_scholar: "Google Scholar",
 };
 
-const automaticSources = new Set(["doi", "crossref", "openalex", "semantic_scholar", "datacite", "europe_pmc"]);
+const automaticSources = new Set(["doi", "crossref", "openalex", "semantic_scholar", "datacite", "europe_pmc", "pubmed_auto"]);
 
 const sampleReferences = [
   "Knuth, D. E. (1984). Literate Programming. The Computer Journal, 27(2), 97-111. https://doi.org/10.1093/comjnl/27.2.97",
@@ -178,11 +179,56 @@ function parseReferences(text) {
     .map((item) => joinReferenceLines(item.split("\n")))
     .filter((item) => item.length > 20);
 
-  if (blocks.length > 1) return blocks;
+  if (blocks.length > 1 && blocks.length >= Math.max(3, lines.length / 5)) return blocks;
 
-  return lines
-    .map((item) => item.replace(/\s+/g, " ").trim())
-    .filter((item) => item.length > 20);
+  return parseUnnumberedReferences(lines);
+}
+
+function parseUnnumberedReferences(lines) {
+  const references = [];
+  let current = [];
+
+  lines.forEach((line) => {
+    const normalized = line.replace(/\s+/g, " ").trim();
+    if (!normalized || /^\d{1,3}$/.test(normalized)) return;
+
+    if (looksLikeUnnumberedReferenceStart(normalized) && current.length && referenceLooksComplete(current) && !previousLineSuggestsContinuation(current)) {
+      references.push(joinReferenceLines(current));
+      current = [normalized];
+      return;
+    }
+
+    current.push(normalized);
+  });
+
+  if (current.length) references.push(joinReferenceLines(current));
+  return references.filter((item) => item.length > 20);
+}
+
+function looksLikeUnnumberedReferenceStart(line) {
+  if (isContinuationLine(line)) return false;
+  const commaCount = (line.match(/,/g) || []).length;
+  if (/^[A-ZÆØÅŽ][A-Za-zÆØÅæøåŽžÀ-ÿ.'’ -]{1,60},\s*[A-ZÆØÅ](?:[.-]+[A-ZÆØÅ])*\.?(?:,|\s|$)/.test(line)) return true;
+  if (/^[A-ZÆØÅŽ][A-Za-zÆØÅæøåŽžÀ-ÿ.'’ -]+(?:\s+[A-ZÆØÅ][A-Za-zÆØÅæøåŽžÀ-ÿ.'’ -]+)+,\s+[A-ZÆØÅ]/.test(line) && commaCount >= 2) return true;
+  if (/^[A-ZÆØÅŽ][A-Za-zÆØÅæøåŽžÀ-ÿ.'’ -]+(?:\s+[A-ZÆØÅ]\.){0,3},\s+[A-ZÆØÅ][A-Za-zÆØÅæøåŽžÀ-ÿ.'’ -]+(?:\s+[A-ZÆØÅ]\.){0,3};/.test(line)) return true;
+  if (/^[A-ZÆØÅ][A-Za-zÆØÅæøåÀ-ÿ'’-]+\s+[A-ZÆØÅ]{1,3},\s+[A-ZÆØÅ][A-Za-zÆØÅæøåÀ-ÿ'’-]+\s+[A-ZÆØÅ]{1,3}\./.test(line)) return true;
+  if (/^[A-ZÆØÅ][A-Za-zÆØÅæøåÀ-ÿ .-]+\. \((19|20)\d{2}/.test(line)) return true;
+  if (/^(Norsk|Oslo|Universitetet|Område|Folkehelseinstituttet)\b/.test(line)) return true;
+  return false;
+}
+
+function previousLineSuggestsContinuation(lines) {
+  const last = lines[lines.length - 1] || "";
+  return /\b[Ii]\s+[A-ZÆØÅ]\.?\s*(?:[A-ZÆØÅ]\.?)?$/.test(last);
+}
+
+function isContinuationLine(line) {
+  return /^(https?:\/\/|doi:|DOI:|\| DOI:|MEDLINE|CINAHL|\(?\d{6,}\)?|[0-9]+[-–][0-9]+,|[0-9]+,)/i.test(line) || /^[a-zæøå]/.test(line);
+}
+
+function referenceLooksComplete(lines) {
+  const text = lines.join(" ");
+  return /\b(19|20)\d{2}\b/.test(text) || /https?:\/\/|doi:|10\.\d{4,9}\//i.test(text);
 }
 
 function preparePastedReferenceText(text) {
@@ -198,6 +244,9 @@ function joinReferenceLines(lines) {
   return lines
     .join(" ")
     .replace(/(10\.\d{4,9}\/\S*?)\s*-\s+(\S+)/gi, "$1-$2")
+    .replace(/https:\/\/doi-\s*org\.ezproxy\.[^/]+\/(10\.\d{4,9}\/\S+)/gi, "https://doi.org/$1")
+    .replace(/https?:\/\/doi-\s*org\/(10\.\d{4,9}\/\S+)/gi, "https://doi.org/$1")
+    .replace(/https?:\/\/([^\s]+)-\s+([^\s]+)/gi, "https://$1-$2")
     .replace(/\s+([.,;:])/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
@@ -212,6 +261,7 @@ async function checkReference(reference, id) {
     searchSemanticScholar(reference, parsed),
     searchDataCite(reference, parsed),
     searchEuropePmc(reference, parsed),
+    searchPubMed(reference, parsed),
   ]);
   sourceChecks.push(...getManualSourceChecks(reference, parsed));
 
@@ -238,19 +288,21 @@ async function checkReference(reference, id) {
 
 function parseMetadata(reference) {
   const doi = normalizeDoi(reference.match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i)?.[0] || "");
+  const pmid = reference.match(/\bPMID:?\s*(\d{5,9})\b/i)?.[1] || "";
   const year = Number(reference.match(/\((19|20)\d{2}\)|\b(19|20)\d{2}\b/)?.[0].replace(/[()]/g, "")) || null;
   const quotedTitle = reference.match(/[“"]([^”"]{8,180})[”"]/);
   const afterYear = reference.match(/\)\.?\s*([^.]*(?:\.[^A-ZÆØÅ]?)?)/);
-  const title = cleanTitle((quotedTitle?.[1] || afterYear?.[1] || parseVancouverTitle(reference) || reference).slice(0, 220));
+  const vancouver = parseVancouverParts(reference);
+  const title = cleanTitle((quotedTitle?.[1] || afterYear?.[1] || vancouver.title || reference).slice(0, 220));
   const url = extractUrl(reference);
   const hasUrl = Boolean(url);
   const kind = inferReferenceKind(reference, doi);
 
-  const authors = parseAuthors(reference);
-  const venue = parseVenue(reference);
+  const authors = vancouver.authors.length ? vancouver.authors : parseAuthors(reference);
+  const venue = vancouver.venue || parseVenue(reference);
   const containerTitle = parseContainerTitle(reference, kind);
 
-  return { doi, year, title, authors, venue, containerTitle, url, hasUrl, kind };
+  return { doi, pmid, year, title, authors, venue, containerTitle, url, hasUrl, kind };
 }
 
 async function checkDoi(reference, parsed) {
@@ -340,22 +392,92 @@ async function searchEuropePmc(reference, parsed) {
   if (!shouldSearchEuropePmc(reference, parsed)) return sourceNotSearched("europe_pmc");
 
   return runSource("europe_pmc", async () => {
-    const query = parsed.doi ? `DOI:"${parsed.doi}"` : parsed.title.length > 8 ? `"${parsed.title}"` : reference;
-    const params = new URLSearchParams({
-      query,
-      format: "json",
-      pageSize: "5",
-    });
-    const response = await fetchWithTimeout(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?${params}`);
-    if (!response.ok) return [];
-    const data = await response.json();
-    return (data.resultList?.result || []).map(normalizeEuropePmcWork);
+    const matches = [];
+    const queries = buildEuropePmcQueries(reference, parsed);
+
+    for (const query of queries) {
+      const params = new URLSearchParams({
+        query,
+        format: "json",
+        pageSize: "5",
+      });
+      const response = await fetchWithTimeout(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?${params}`);
+      if (!response.ok) continue;
+      const data = await response.json();
+      matches.push(...(data.resultList?.result || []).map(normalizeEuropePmcWork));
+      if (matches.some((match) => match.doi || match.sourceId)) break;
+    }
+
+    return dedupeWorks(matches);
   });
 }
 
 function shouldSearchEuropePmc(reference, parsed) {
-  if (/pmid|pmcid|pubmed|medline|bmc|bmj|lancet|jama|nejm|nursing|surgery|medicine|medical|patient|clinical|health|hospital|perioperative|aorn|sykepleie|helse/i.test(reference)) return true;
+  if (parsed.pmid) return true;
+  if (/pmid|pmcid|pubmed|medline|bmc|bmj|lancet|jama|nejm|nursing|surgery|medicine|medical|patient|clinical|health|hospital|perioperative|prehospital|disaster|emergency|ems|aorn|sykepleie|helse/i.test(reference)) return true;
   return Boolean(parsed.doi && /10\.1186|10\.1001|10\.1016|10\.1097|10\.1111|10\.1136|10\.1056|10\.2196|10\.3389/i.test(parsed.doi));
+}
+
+function buildEuropePmcQueries(reference, parsed) {
+  const queries = [];
+  if (parsed.pmid) queries.push(`EXT_ID:${parsed.pmid} AND SRC:MED`);
+  if (parsed.doi) queries.push(`DOI:"${parsed.doi}"`);
+  if (parsed.title?.length > 8) queries.push(`TITLE:"${parsed.title}"`);
+  if (parsed.title?.length > 8 && parsed.authors?.[0] && parsed.year) queries.push(`"${parsed.title}" ${parsed.authors[0]} ${parsed.year}`);
+  if (parsed.title?.length > 8 && parsed.authors?.[0] && parsed.year) queries.push(`${simplifyMedicalTitle(parsed.title)} ${parsed.authors[0]} ${parsed.year}`);
+  if (parsed.authors?.[0] && parsed.venue && parsed.year) queries.push(`${parsed.authors[0]} "${parsed.venue}" ${parsed.year}`);
+  if (parsed.title?.length > 8 && parsed.year) queries.push(`"${parsed.title}" ${parsed.year}`);
+  queries.push(cleanSearchQuery(reference));
+  return [...new Set(queries.filter((query) => query && query.length > 8))].slice(0, 5);
+}
+
+async function searchPubMed(reference, parsed) {
+  if (!shouldSearchEuropePmc(reference, parsed)) return sourceNotSearched("pubmed_auto");
+
+  return runSource("pubmed_auto", async () => {
+    const term = buildPubMedQuery(reference, parsed);
+    if (!term) return [];
+
+    const searchParams = new URLSearchParams({
+      db: "pubmed",
+      retmode: "json",
+      retmax: "5",
+      term,
+    });
+    const searchResponse = await fetchWithTimeout(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${searchParams}`);
+    if (!searchResponse.ok) return [];
+    const searchData = await searchResponse.json();
+    const ids = searchData.esearchresult?.idlist || [];
+    if (!ids.length) return [];
+
+    const summaryParams = new URLSearchParams({
+      db: "pubmed",
+      retmode: "json",
+      id: ids.join(","),
+    });
+    const summaryResponse = await fetchWithTimeout(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?${summaryParams}`);
+    if (!summaryResponse.ok) return ids.map((id) => normalizePubMedWork({ uid: id }));
+    const summaryData = await summaryResponse.json();
+    return ids.map((id) => normalizePubMedWork(summaryData.result?.[id] || { uid: id }));
+  });
+}
+
+function buildPubMedQuery(reference, parsed) {
+  if (parsed.pmid) return parsed.pmid;
+  if (parsed.doi) return parsed.doi;
+  return [
+    simplifyMedicalTitle(parsed.title),
+    parsed.authors?.[0],
+    parsed.year,
+  ].filter(Boolean).join(" ");
+}
+
+function simplifyMedicalTitle(title) {
+  return cleanTitle(title)
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\b(the|state|of|in|and|for|with|systems?)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function fetchWithTimeout(url) {
@@ -480,6 +602,24 @@ function normalizeEuropePmcWork(item) {
   };
 }
 
+function normalizePubMedWork(item) {
+  const articleIds = item?.articleids || [];
+  const doi = articleIds.find((entry) => entry.idtype === "doi")?.value || "";
+  const authors = (item?.authors || []).map((author) => author.name).filter(Boolean);
+  const year = Number(String(item?.pubdate || "").match(/\b(19|20)\d{2}\b/)?.[0]) || null;
+  return {
+    source: "pubmed_auto",
+    sourceId: item?.uid || "",
+    doi: normalizeDoi(doi),
+    title: cleanTitle(item?.title || ""),
+    authors,
+    year,
+    venue: item?.fulljournalname || item?.source || "",
+    publisher: "",
+    url: item?.uid ? `https://pubmed.ncbi.nlm.nih.gov/${item.uid}/` : "",
+  };
+}
+
 function dedupeWorks(works) {
   const seen = new Set();
   return works.filter((work) => {
@@ -595,10 +735,23 @@ function normalizeDoi(value) {
 }
 
 function parseVancouverTitle(reference) {
+  return parseVancouverParts(reference).title;
+}
+
+function parseVancouverParts(reference) {
   const withoutNumber = reference.replace(/^(\[\d+\]|\d{1,3}[.)])\s+/, "");
-  const parts = withoutNumber.split(/\.\s+/).map((part) => part.trim()).filter(Boolean);
-  if (parts.length < 2) return "";
-  return parts[1];
+  const match = withoutNumber.match(/^(.+?)\.\s+(.+?)\.\s+(.+?)(?:\.\s+|$)/);
+  if (!match) return { authors: [], title: "", venue: "" };
+
+  return {
+    authors: match[1]
+      .split(/\s*,\s*/)
+      .map((author) => author.trim())
+      .filter(Boolean)
+      .slice(0, 12),
+    title: cleanTitle(match[2]),
+    venue: cleanTitle(match[3].replace(/\b(19|20)\d{2}\b.*$/, "")),
+  };
 }
 
 function extractUrl(reference) {
@@ -929,6 +1082,7 @@ function getSourcePillUrl(sourceCheck, result) {
   if (sourceCheck.source === "supplied_url" && result.parsed?.url) return result.parsed.url;
   if (sourceCheck.source === "oria") return `https://bibsys-network.primo.exlibrisgroup.com/discovery/search?vid=47BIBSYS_NETWORK:BIBSYS_UNION&query=any,contains,${query}`;
   if (sourceCheck.source === "pubmed") return `https://pubmed.ncbi.nlm.nih.gov/?term=${query}`;
+  if (sourceCheck.source === "pubmed_auto") return `https://pubmed.ncbi.nlm.nih.gov/?term=${query}`;
   if (sourceCheck.source === "scopus") return `https://www.scopus.com/results/results.uri?sort=plf-f&src=s&st1=${query}`;
   if (sourceCheck.source === "web_of_science") return `https://www.webofscience.com/wos/woscc/basic-search?search_mode=BasicSearch&value(input1)=${query}&field(input1)=ALL`;
   if (sourceCheck.source === "google_scholar") return `https://scholar.google.com/scholar?q=${query}`;
